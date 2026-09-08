@@ -2,40 +2,71 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import yfinance as yf
 import pandas as pd
+import numpy as np
 
 app = Flask(__name__)
 CORS(app)
 
-# Cache to make it instant after first load
-CACHE = {}
+PAIRS = ["EURUSD=X","GBPUSD=X","USDJPY=X","AUDUSD=X","USDCAD=X","GBPJPY=X","EURJPY=X","EURGBP=X","USDCHF=X","NZDUSD=X","BTC-USD","ETH-USD","GC=F","XAUUSD=X"]
 
-PAIRS = ["EURUSD=X","GBPUSD=X","USDJPY=X","AUDUSD=X","USDCAD=X","GBPJPY=X","EURJPY=X","EURGBP=X","BTC-USD","GC=F","XAUUSD=X","NAS100"]
-
-def get_data(symbol, tf_param):
-    map_interval = {"5m":"5m","15m":"15m","1h":"60m","4h":"60m","1d":"1d"}
-    map_period = {"5m":"5d","15m":"5d","1h":"1mo","4h":"3mo","1d":"1y"}
-    interval = map_interval.get(tf_param, "60m")
-    period = map_period.get(tf_param, "1mo")
-
-    df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=True)
-    if len(df) < 30: return None
-    col = df['Close']
-    if isinstance(col, pd.DataFrame): col = col.iloc[:,0]
-    return col
-
-def scan_pair(symbol, timeframe):
+def scan_pair(symbol, tf):
     try:
-        col = get_data(symbol, timeframe)
-        if col is None: return None
-        e50 = col.ewm(span=50).mean()
-        e200 = col.ewm(span=200).mean()
-        close = float(col.iloc[-1]); e50_v = float(e50.iloc[-1]); e200_v = float(e200.iloc[-1])
+        interval = {"5m":"5m","15m":"15m","1h":"60m","4h":"60m","1d":"1d"}.get(tf,"60m")
+        period = {"5m":"5d","15m":"5d","1h":"1mo","4h":"3mo","1d":"1y"}.get(tf,"1mo")
+        df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=True)
+        if len(df) < 50: return None
 
-        if close > e50_v > e200_v: t,c,s = "BUY TREND","green",85
-        elif close < e50_v < e200_v: t,c,s = "SELL TREND","red",85
-        else: t,c,s = "RANGING","gray",40
+        close = df['Close']
+        if isinstance(close, pd.DataFrame): close = close.iloc[:,0]
+        high = df['High'].iloc[:,0] if isinstance(df['High'], pd.DataFrame) else df['High']
+        low = df['Low'].iloc[:,0] if isinstance(df['Low'], pd.DataFrame) else df['Low']
 
-        return {"pair": symbol.replace("=X","").replace("-USD",""), "price": round(close,5), "trend": t, "score": s, "color": c, "tf": timeframe}
+        ema20 = close.ewm(span=20).mean()
+        ema50 = close.ewm(span=50).mean()
+        ema200 = close.ewm(span=200).mean()
+
+        # ATR for TP/SL
+        tr = pd.concat([high-low, (high-close.shift()).abs(), (low-close.shift()).abs()], axis=1).max(axis=1)
+        atr = tr.rolling(14).mean()
+
+        c = float(close.iloc[-1])
+        e20 = float(ema20.iloc[-1]); e50 = float(ema50.iloc[-1]); e200 = float(ema200.iloc[-1])
+        atr_v = float(atr.iloc[-1])
+        # Fix small ATR
+        if atr_v < c*0.0005: atr_v = c*0.001
+
+        # Logic
+        score=40; trend="RANGING"; color="gray"; direction=""
+
+        if c > e20 > e50 and e50 > e200: trend="STRONG BUY"; score=95; color="green"; direction="BUY"
+        elif c > e20 and e20 > e50: trend="BUY TREND"; score=80; color="green"; direction="BUY"
+        elif c > e50: trend="WEAK BUY"; score=60; color="green"; direction="BUY"
+        elif c < e20 < e50 and e50 < e200: trend="STRONG SELL"; score=95; color="red"; direction="SELL"
+        elif c < e20 and e20 < e50: trend="SELL TREND"; score=80; color="red"; direction="SELL"
+        elif c < e50: trend="WEAK SELL"; score=60; color="red"; direction="SELL"
+
+        if direction == "":
+            return {"pair":symbol.replace("=X","").replace("-USD",""), "price":round(c,5), "trend":trend, "score":score, "color":color, "tf":tf, "entry":round(c,5), "sl":0, "tp1":0, "tp2":0, "dir":direction}
+
+        # Calculate TP/SL based on ATR (real trading logic)
+        if direction == "BUY":
+            entry = c
+            sl = entry - (atr_v * 1.5)
+            tp1 = entry + (atr_v * 1.5)
+            tp2 = entry + (atr_v * 3)
+        else:
+            entry = c
+            sl = entry + (atr_v * 1.5)
+            tp1 = entry - (atr_v * 1.5)
+            tp2 = entry - (atr_v * 3)
+
+        return {
+            "pair": symbol.replace("=X","").replace("-USD",""), 
+            "price": round(c,5), 
+            "trend": trend, "score": score, "color": color, "tf": tf,
+            "entry": round(entry,5), "sl": round(sl,5), "tp1": round(tp1,5), "tp2": round(tp2,5),
+            "dir": direction
+        }
     except Exception as e:
         print(e)
         return None
@@ -43,20 +74,15 @@ def scan_pair(symbol, timeframe):
 @app.route('/scan')
 def scan():
     tf = request.args.get('tf','1h')
-    # Check cache (valid for 2 mins)
-    if tf in CACHE:
-        return jsonify(CACHE[tf])
-
     results = []
     for p in PAIRS:
         r = scan_pair(p, tf)
         if r: results.append(r)
-
     results = sorted(results, key=lambda x: x['score'], reverse=True)
-    CACHE[tf] = results
     return jsonify(results)
 
 @app.route('/')
-def home(): return "EastLife PRO LIVE"
+def home(): return "EastLife PRO V4 - TP/SL"
 
-if __name__ == '__main__': app.run(host='0.0.0.0', port=10000)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
