@@ -7,7 +7,7 @@ import numpy as np
 app = Flask(__name__)
 CORS(app)
 
-PAIRS = ["EURUSD=X","GBPUSD=X","USDJPY=X","AUDUSD=X","USDCAD=X","GBPJPY=X","EURJPY=X","EURGBP=X","USDCHF=X","NZDUSD=X","BTC-USD","ETH-USD","GC=F","XAUUSD=X"]
+PAIRS = ["EURUSD=X","GBPUSD=X","USDJPY=X","AUDUSD=X","USDCAD=X","GBPJPY=X","EURJPY=X","EURGBP=X","USDCHF=X","NZDUSD=X","BTC-USD","ETH-USD","GC=F","SI=F","NQ=F"]
 
 def scan_pair(symbol, tf):
     try:
